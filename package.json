@@ -1,0 +1,40 @@
+{
+  "name": "kaistrum-academy-backend",
+  "version": "1.0.0",
+  "description": "Kaistrum Academy API — Express 5, MongoDB driver, Paystack",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "nodemon --watch src src/server.js",
+    "start": "node src/server.js",
+    "seed": "node src/scripts/seed.js",
+    "seed:fresh": "node src/scripts/seed.js --fresh",
+    "smoke": "node src/scripts/smoke.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.1",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongodb": "^7.5.0",
+    "morgan": "^1.11.0",
+    "nodemailer": "^9.0.3",
+    "pdfkit": "^0.19.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

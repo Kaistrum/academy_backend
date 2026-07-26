@@ -236,3 +236,100 @@ Every variable is documented in `.env.example`. The essentials are `MONGODB_URI`
 
 If the API and frontend are on different sites in production, set `COOKIE_SAMESITE=none`,
 `COOKIE_SECURE=true` and serve over HTTPS, or have the client hold the refresh token itself.
+
+## Deployment — Docker on a VPS
+
+The front end deploys to Vercel; this stack is everything else. `docker-compose.yml` runs the
+API and MongoDB, with an optional Caddy service that terminates TLS.
+
+```bash
+git clone … && cd Backend
+cp .env.production.example .env      # then fill in JWT_SECRET, domains, Mongo password
+docker compose --profile proxy up -d --build
+docker compose run --rm api node src/scripts/seed.js --fresh   # first boot only
+```
+
+Without `--profile proxy` you get just `api` + `mongo`, with the API published on
+`127.0.0.1:4000` for an nginx/Traefik you already run — point it there and keep the loopback
+binding so the API is never exposed directly.
+
+### Sharing the host with other stacks
+
+This is written for a VPS that already runs other containers. Before the first `up`, check the
+three ports it wants are free:
+
+```bash
+ss -tlnp '( sport = :80 or sport = :443 or sport = :4000 )'
+```
+
+- **`:80` is assumed to be taken.** Caddy never binds it: its HTTP listener is moved to an
+  unpublished port and certificates are issued over the **TLS-ALPN-01** challenge on `:443`
+  instead of the usual HTTP-01 one. The cost is no automatic HTTP→HTTPS redirect, which an API
+  called only over `https://` does not need. Free up `:80` and you can delete the global block
+  and the `tls` block in the `Caddyfile` to get the normal behaviour back.
+- **`:443` must be free** for that to work. If something else already terminates TLS on this
+  host, drop the `proxy` profile entirely and add a vhost there pointing at `127.0.0.1:4000`.
+- **`:4000` is loopback-only**, so it cannot collide with a published port on another stack.
+
+Memory is capped so the stack behaves on a crowded box: `mem_limit` of 1 GB on MongoDB with
+`--wiredTigerCacheSizeGB 0.5` (WiredTiger otherwise claims ~50% of host RAM), and 256 MB on
+Caddy. Raise the cache if the working set outgrows it.
+
+Compose namespaces everything under the project name `kaistrum-academy`, so containers, volumes
+and networks cannot clash with the stacks already on the box.
+
+**The image.** `node:22-alpine`, dependencies installed in a separate stage with
+`pnpm install --prod --frozen-lockfile`, so the runtime layer has no lockfile, no pnpm store
+and no `nodemon`. It runs as the unprivileged `node` user, `HEALTHCHECK` polls `/health` with
+Node's built-in `fetch` (no curl in the image), and `server.js` already traps `SIGTERM`, so
+`docker compose stop` drains connections instead of killing them.
+
+**MongoDB** publishes no ports — it is reachable only over the compose-internal network, which
+is also marked `internal: true` so the database itself has no route out. Data lives in the
+`mongo-data` volume. Root credentials come from `MONGO_ROOT_USER`/`MONGO_ROOT_PASSWORD` and are
+baked into the volume on first start, so set them before the first `up`. To run against a
+managed cluster instead, set `MONGODB_URI_EXTERNAL` — compose always sets the container's
+`MONGODB_URI` itself, so a leftover development value for that name in `.env` can never point
+the container at the wrong database.
+
+The stack runs a standalone `mongod`, which is what the code is written for — correctness comes
+from unique indexes and idempotent upserts, not transactions.
+
+### Talking to Vercel
+
+The two halves are on different sites, which drives most of the production config:
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `CORS_ORIGINS` | the Vercel domain(s) | exact-match allow-list; no wildcards |
+| `APP_URL` | the Vercel domain | OAuth callbacks and email links land there |
+| `API_URL` | `https://api.…` | builds the OAuth redirect URIs you register |
+| `COOKIE_SAMESITE` / `COOKIE_SECURE` | `none` / `true` | a cross-site cookie needs both, and both need HTTPS |
+| `COOKIE_DOMAIN` | unset | a cookie cannot span two registrable domains |
+
+On Vercel, set `NEXT_PUBLIC_API_URL=https://api.your-domain.com/api/v1`.
+
+Two things worth knowing:
+
+- **Preview deployments get random `*.vercel.app` URLs**, and the allow-list is exact-match, so
+  they will be refused by CORS. Assign a stable alias domain to the branch you preview from and
+  add that, rather than opening the list up.
+- **Safari and Firefox block third-party cookies by default**, so the `ka_refresh` cookie may
+  never reach the API from a Vercel-hosted page. The client already keeps its own copy of the
+  refresh token and sends it in the request body, so sessions survive — but don't rely on the
+  cookie alone if you write another client.
+
+Point the Paystack dashboard webhook at `{API_URL}/api/v1/payments/webhook` and set
+`PAYSTACK_CALLBACK_URL` to `{APP_URL}/checkout/callback`.
+
+### Operating it
+
+```bash
+docker compose logs -f api                      # tail the API
+docker compose exec mongo mongosh -u "$MONGO_ROOT_USER" -p   # a database shell
+docker compose exec -T mongo mongodump --archive --gzip -u "$MONGO_ROOT_USER" -p "$MONGO_ROOT_PASSWORD" --authenticationDatabase admin > backup.gz
+docker compose up -d --build api                # deploy a new revision
+```
+
+`pnpm smoke` writes to whatever database it is pointed at — run it against a throwaway
+`MONGODB_DB`, never the production one.

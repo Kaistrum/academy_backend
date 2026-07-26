@@ -1,0 +1,38 @@
+# TLS terminator for the API. Caddy obtains and renews a Let's Encrypt
+# certificate for API_DOMAIN automatically, which is what makes the
+# `SameSite=None; Secure` refresh cookie usable from the Vercel front end.
+#
+# Point an A/AAAA record at the VPS before starting this, or the certificate
+# order will fail.
+
+{
+	# This host already runs another stack on :80, so Caddy never binds it.
+	# Its HTTP listener is moved to an unpublished port and certificates are
+	# issued over TLS-ALPN-01 on :443 instead of the usual HTTP-01 challenge.
+	# If you free up :80, delete this block and the `tls` block below to get
+	# the HTTP→HTTPS redirect back.
+	http_port 8080
+	https_port 443
+}
+
+{$API_DOMAIN} {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	encode gzip
+
+	# Express runs with `trust proxy = 1` in production and reads these to
+	# get the real client IP for rate limiting and the audit log.
+	reverse_proxy api:4000 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

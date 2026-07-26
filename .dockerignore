@@ -1,0 +1,23 @@
+# Reinstalled inside the image from the lockfile.
+node_modules
+
+# Secrets and local config — everything reaches the container as env vars.
+.env
+.env.*
+
+.git
+.gitignore
+.github
+
+Dockerfile
+.dockerignore
+docker-compose*.yml
+Caddyfile
+
+*.md
+coverage
+dist
+.cache
+*.log
+npm-debug.log*
+.DS_Store

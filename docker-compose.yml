@@ -1,0 +1,97 @@
+name: kaistrum-academy
+
+# Production stack for a single VPS. The front end lives on Vercel, so nothing
+# here serves the app — only the API, its database and (optionally) the TLS
+# terminator that the cross-site session cookie requires.
+#
+#   docker compose up -d --build                  API + MongoDB
+#   docker compose --profile proxy up -d --build   … plus Caddy on :80/:443
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    # WiredTiger otherwise sizes its cache at ~50% of host RAM, which is far
+    # too greedy on a box shared with other stacks. 0.5 GB is ample for this
+    # dataset; raise it if the working set grows.
+    command: ["--wiredTigerCacheSizeGB", "0.5"]
+    mem_limit: 1g
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?set MONGO_ROOT_USER in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+    volumes:
+      - mongo-data:/data/db
+    # Deliberately no `ports:` — the database is only reachable from this
+    # network. Use `docker compose exec mongo mongosh …` for a shell.
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+    image: kaistrum-academy-api:latest
+    restart: unless-stopped
+    # Reaps orphaned processes so the container stops promptly.
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      # Always set here so a stray MONGODB_URI in .env (a leftover dev value
+      # pointing at 127.0.0.1, say) can never reach the container: `environment`
+      # wins over `env_file`. Set MONGODB_URI_EXTERNAL to use a managed cluster.
+      MONGODB_URI: ${MONGODB_URI_EXTERNAL:-mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    # Bound to loopback: reachable by a reverse proxy on the host, never from
+    # the public internet. Drop this block if you only use the `proxy` profile.
+    ports:
+      - "127.0.0.1:4000:4000"
+    networks:
+      - internal
+      - edge
+
+  # Optional. Skip the profile if something already terminates TLS on this host
+  # — just proxy that to 127.0.0.1:4000 instead.
+  #
+  # Binds :443 only, because :80 belongs to another stack on this VPS. See the
+  # Caddyfile: certificates come from the TLS-ALPN-01 challenge rather than the
+  # usual HTTP-01 one, so nothing needs port 80.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      # Interpolation runs even when the profile is inactive, so this needs a
+      # default; set the real hostname in .env before using --profile proxy.
+      API_DOMAIN: ${API_DOMAIN:-api.localhost}
+    ports:
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+    networks:
+      - edge
+
+volumes:
+  mongo-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
+    internal: true
+  edge:
